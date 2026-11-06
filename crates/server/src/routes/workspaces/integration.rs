@@ -53,6 +53,8 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/editor/path", get(get_workspace_editor_path))
         .route("/editor/open", post(open_workspace_in_editor))
+        .route("/files/open", post(open_workspace_path))
+        .route("/files/check", post(check_workspace_paths))
         .route("/agent/setup", post(run_agent_setup))
         .route("/github/cli/setup", post(gh_cli_setup_handler))
 }
@@ -141,6 +143,132 @@ pub async fn open_workspace_in_editor(
             );
             Err(ApiError::EditorOpen(e))
         }
+    }
+}
+
+#[derive(Deserialize, TS)]
+pub struct OpenPathRequest {
+    /// A path from the chat: absolute, or relative to the workspace or one of its repos.
+    path: String,
+    /// Show it in the file manager instead of opening it.
+    #[serde(default)]
+    reveal: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct OpenPathResponse {
+    pub path: String,
+    pub revealed: bool,
+}
+
+/// Opens a file named in the chat with its default program, or shows a folder (or a file that could run code) in
+/// the file manager. Relative paths are looked up in the workspace and its repos; the path must exist.
+pub async fn open_workspace_path(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<OpenPathRequest>,
+) -> Result<ResponseJson<ApiResponse<OpenPathResponse>>, ApiError> {
+    let bases = path_bases(&deployment, &workspace).await?;
+    let Some(found) = resolve_chat_path(&bases, &payload.path) else {
+        return Err(ApiError::BadRequest(format!("no such file or folder: {}", payload.path)));
+    };
+    let found = dunce_like(found);
+    let reveal = payload.reveal || found.is_dir() || utils::browser::is_runnable_path(&found);
+    let result = if payload.reveal {
+        utils::browser::reveal_path(&found).await
+    } else {
+        utils::browser::open_path(&found).await
+    };
+    result.map_err(|e| ApiError::BadRequest(format!("could not open {}: {e}", found.display())))?;
+    tracing::info!(workspace_id = %workspace.id, path = %found.display(), reveal, "opened a path from the chat");
+    Ok(ResponseJson(ApiResponse::success(OpenPathResponse {
+        path: found.to_string_lossy().into_owned(),
+        revealed: reveal,
+    })))
+}
+
+#[derive(Deserialize, TS)]
+pub struct CheckPathsRequest {
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct CheckPathsResponse {
+    /// The asked strings that name an existing file or folder.
+    pub existing: Vec<String>,
+}
+
+/// Which of the paths named in the chat exist (so only those become clickable).
+pub async fn check_workspace_paths(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CheckPathsRequest>,
+) -> Result<ResponseJson<ApiResponse<CheckPathsResponse>>, ApiError> {
+    let bases = path_bases(&deployment, &workspace).await?;
+    let existing = payload
+        .paths
+        .into_iter()
+        .take(500)
+        .filter(|p| p.len() <= 1024 && resolve_chat_path(&bases, p).is_some())
+        .collect();
+    Ok(ResponseJson(ApiResponse::success(CheckPathsResponse { existing })))
+}
+
+/// Folders a relative path from the chat may be relative to: each repo in the workspace, the workspace, each repo
+/// folder itself (a workspace without a worktree runs there).
+async fn path_bases(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+) -> Result<Vec<PathBuf>, ApiError> {
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(workspace)
+        .await?;
+    let base = PathBuf::from(&container_ref);
+    let repos =
+        WorkspaceRepo::find_repos_for_workspace(&deployment.db().pool, workspace.id).await?;
+    let mut bases: Vec<PathBuf> = repos.iter().map(|r| base.join(&r.name)).collect();
+    bases.push(base);
+    bases.extend(repos.iter().map(|r| PathBuf::from(&r.path)));
+    Ok(bases)
+}
+
+/// The existing file or folder a chat string names: absolute, or relative to one of `bases`. Quotes and a trailing
+/// `:line` are dropped.
+fn resolve_chat_path(bases: &[PathBuf], text: &str) -> Option<PathBuf> {
+    let raw = text.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    if raw.is_empty() || raw.contains('\n') {
+        return None;
+    }
+    // "file.ts:42" or "file.ts:42:7" -> "file.ts"
+    let mut raw = raw;
+    for _ in 0..2 {
+        if let Some((head, tail)) = raw.rsplit_once(':')
+            && !tail.is_empty()
+            && tail.chars().all(|c| c.is_ascii_digit())
+            && head.len() > 2
+        {
+            raw = head;
+        }
+    }
+    let wanted = Path::new(raw);
+    if wanted.is_absolute() {
+        return wanted.exists().then(|| wanted.to_path_buf());
+    }
+    bases.iter().map(|b| b.join(wanted)).find(|p| p.exists())
+}
+
+/// Canonical form without the Windows `\\?\` prefix, which Explorer does not take.
+fn dunce_like(path: PathBuf) -> PathBuf {
+    match std::fs::canonicalize(&path) {
+        Ok(p) => {
+            let s = p.to_string_lossy();
+            match s.strip_prefix(r"\\?\") {
+                Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+                _ => p,
+            }
+        }
+        Err(_) => path,
     }
 }
 

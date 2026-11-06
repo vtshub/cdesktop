@@ -127,7 +127,9 @@ type WysiwygProps = {
   /** Function to find a matching diff path for clickable inline code (only in read-only mode) */
   findMatchingDiffPath?: (text: string) => string | null;
   /** Callback when clickable inline code is clicked (only in read-only mode) */
-  onCodeClick?: (fullPath: string) => void;
+  onCodeClick?: (fullPath: string, event: MouseEvent) => void;
+  /** Tooltip for clickable inline code (only in read-only mode) */
+  codeClickTitle?: string;
   /** Hide the copy/edit/delete action buttons in read-only mode */
   hideActions?: boolean;
   /** Show a static toolbar below the editor content */
@@ -271,6 +273,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       autoFocus = false,
       findMatchingDiffPath,
       onCodeClick,
+      codeClickTitle,
       hideActions = false,
       showStaticToolbar = false,
       saveStatus,
@@ -603,6 +606,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                   <ClickableCodePlugin
                     findMatchingDiffPath={findMatchingDiffPath}
                     onCodeClick={onCodeClick}
+                    clickTitle={codeClickTitle}
                   />
                 )}
               </LexicalComposer>

@@ -491,3 +491,13 @@ html {
     background-color: #212121;
   }
 }
+
+/* Inline code in the chat that names a file or folder (ClickableCodePlugin) */
+.clickable-code {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.clickable-code:hover {
+  text-decoration-style: solid;
+  color: hsl(var(--brand, 25 90% 55%));
+}

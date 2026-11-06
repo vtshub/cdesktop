@@ -1,4 +1,11 @@
-import { useMemo, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useMemo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -26,6 +33,7 @@ import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
 import { useLogsPanelActions } from '@/shared/hooks/useLogsPanel';
 import { cn } from '@/shared/lib/utils';
+import { workspacesApi } from '@/shared/lib/api';
 import {
   ScriptFixerDialog,
   type ScriptType,
@@ -484,6 +492,61 @@ function FileEntryDiffBody({
   );
 }
 
+// Inline code that may name a file or folder: an absolute path, or a relative one with a slash or a file extension.
+const PATH_LIKE =
+  /^(?:[A-Za-z]:[\\/]|\\\\|\/|~\/|\.{1,2}[\\/])\S|^[\w.@+-]+(?:[\\/][\w.@+ -]+)*(?:[\\/]|\.[A-Za-z][A-Za-z0-9]{0,9})(?::\d+){0,2}$/;
+
+function pathCandidates(content: string): string[] {
+  const found = new Set<string>();
+  for (const m of content.matchAll(/`([^`\n]{2,400})`/g)) {
+    const text = m[1].trim();
+    if (PATH_LIKE.test(text)) found.add(text);
+  }
+  return [...found];
+}
+
+// Answers per workspace, so a re-render or another message does not ask again.
+const existingPathCache = new Map<string, Map<string, boolean>>();
+
+function useExistingPaths(
+  workspaceId: string | undefined,
+  content: string
+): Set<string> {
+  const candidates = useMemo(() => pathCandidates(content), [content]);
+  const [existing, setExisting] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (!workspaceId || candidates.length === 0) return;
+    let cache = existingPathCache.get(workspaceId);
+    if (!cache) {
+      cache = new Map();
+      existingPathCache.set(workspaceId, cache);
+    }
+    const known = cache;
+    const pick = () =>
+      setExisting(new Set(candidates.filter((c) => known.get(c) === true)));
+    const unknown = candidates.filter((c) => !known.has(c));
+    if (unknown.length === 0) {
+      pick();
+      return;
+    }
+    let cancelled = false;
+    workspacesApi
+      .checkPaths(workspaceId, unknown)
+      .then(({ existing: hits }) => {
+        const hitSet = new Set(hits);
+        for (const c of unknown) known.set(c, hitSet.has(c));
+        if (!cancelled) pick();
+      })
+      .catch((err) => console.warn('Could not check chat paths:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, candidates]);
+
+  return existing;
+}
+
 function AppChatMarkdown({
   content,
   workspaceId,
@@ -500,6 +563,32 @@ function AppChatMarkdown({
   hideActions?: boolean;
 }) {
   const { viewFileInChanges, findMatchingDiffPath } = useChangesViewActions();
+  const existingPaths = useExistingPaths(workspaceId, content);
+
+  // A path that exists opens; else a file in the diff shows its changes.
+  const findClickable = useCallback(
+    (text: string): string | null => {
+      if (existingPaths.has(text)) return text;
+      const diffPath = findMatchingDiffPath(text);
+      return diffPath ? `diff:${diffPath}` : null;
+    },
+    [existingPaths, findMatchingDiffPath]
+  );
+
+  const onCodeClick = useCallback(
+    (target: string, event: MouseEvent) => {
+      if (target.startsWith('diff:')) {
+        viewFileInChanges(target.slice(5));
+        return;
+      }
+      if (!workspaceId) return;
+      const reveal = event.ctrlKey || event.metaKey || event.altKey;
+      workspacesApi
+        .openPath(workspaceId, { path: target, reveal })
+        .catch((err) => console.error('Could not open path:', err));
+    },
+    [viewFileInChanges, workspaceId]
+  );
 
   return (
     <ChatMarkdown
@@ -515,8 +604,9 @@ function AppChatMarkdown({
           className={className}
           workspaceId={workspaceId}
           sessionId={sessionId}
-          findMatchingDiffPath={findMatchingDiffPath}
-          onCodeClick={viewFileInChanges}
+          findMatchingDiffPath={findClickable}
+          onCodeClick={onCodeClick}
+          codeClickTitle="Click: open · Ctrl+click: show in folder"
         />
       )}
     />

@@ -5,7 +5,9 @@ interface ClickableCodePluginProps {
   /** Function to find a matching diff path (supports partial/right-hand match) */
   findMatchingDiffPath: (text: string) => string | null;
   /** Callback when a clickable code element is clicked (receives the full path) */
-  onCodeClick: (fullPath: string) => void;
+  onCodeClick: (fullPath: string, event: MouseEvent) => void;
+  /** Tooltip for clickable code elements */
+  clickTitle?: string;
 }
 
 /**
@@ -21,6 +23,7 @@ interface ClickableCodePluginProps {
 export function ClickableCodePlugin({
   findMatchingDiffPath,
   onCodeClick,
+  clickTitle,
 }: ClickableCodePluginProps) {
   const [editor] = useLexicalComposerContext();
   const processedElementsRef = useRef<WeakSet<Element>>(new WeakSet());
@@ -28,6 +31,7 @@ export function ClickableCodePlugin({
   useEffect(() => {
     const root = editor.getRootElement();
     if (!root) return;
+    const handlers = new Map<HTMLElement, (e: Event) => void>();
 
     // Process a single code element
     const processCodeElement = (element: Element) => {
@@ -46,15 +50,17 @@ export function ClickableCodePlugin({
       // Add clickable styling
       (element as HTMLElement).style.cursor = 'pointer';
       element.classList.add('clickable-code');
+      if (clickTitle) (element as HTMLElement).title = clickTitle;
 
       // Add click handler - use the full matched path for navigation
       const handleClick = (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
-        onCodeClick(matchedPath);
+        onCodeClick(matchedPath, e as MouseEvent);
       };
 
       element.addEventListener('click', handleClick);
+      handlers.set(element as HTMLElement, handleClick);
 
       // Store cleanup function on the element
       (element as HTMLElement).dataset.clickableCode = 'true';
@@ -102,16 +108,17 @@ export function ClickableCodePlugin({
 
     return () => {
       observer.disconnect();
-      // Clean up click handlers
-      const clickableElements = root.querySelectorAll('[data-clickable-code]');
-      clickableElements.forEach((el) => {
-        (el as HTMLElement).style.cursor = '';
+      // Clean up click handlers (a re-run would otherwise add a second one)
+      handlers.forEach((handler, el) => {
+        el.removeEventListener('click', handler);
+        el.style.cursor = '';
+        el.removeAttribute('title');
         el.classList.remove('clickable-code');
-        delete (el as HTMLElement).dataset.clickableCode;
+        delete el.dataset.clickableCode;
       });
       processedElementsRef.current = new WeakSet();
     };
-  }, [editor, findMatchingDiffPath, onCodeClick]);
+  }, [editor, findMatchingDiffPath, onCodeClick, clickTitle]);
 
   return null;
 }

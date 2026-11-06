@@ -555,6 +555,36 @@ export const workspacesApi = {
     return handleApiResponse<OpenEditorResponse>(response);
   },
 
+  /** Open a path named in the chat (file: default program; folder or reveal: file manager). */
+  openPath: async (
+    workspaceId: string,
+    data: { path: string; reveal: boolean }
+  ): Promise<{ path: string; revealed: boolean }> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/integration/files/open`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<{ path: string; revealed: boolean }>(response);
+  },
+
+  /** Which of these chat strings name an existing file or folder. */
+  checkPaths: async (
+    workspaceId: string,
+    paths: string[]
+  ): Promise<{ existing: string[] }> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/integration/files/check`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ paths }),
+      }
+    );
+    return handleApiResponse<{ existing: string[] }>(response);
+  },
+
   getEditorPath: async (
     workspaceId: string
   ): Promise<{ workspace_path: string }> => {
