@@ -17,6 +17,7 @@ use db::{
             ExecutionContext, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
         },
         execution_process_repo_state::ExecutionProcessRepoState,
+        provider::Provider,
         repo::Repo,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
         session::{Session, SessionError},
@@ -1062,23 +1063,60 @@ impl LocalContainerService {
             .filter(|dir| !dir.is_empty())
             .cloned();
 
+        // A queued message carries no provider selection, so it would spawn
+        // with the default (ambient) Claude config. Run it on the provider the
+        // chat used last, with that turn's model, like a direct follow-up.
+        let mut executor_config = queued_data.executor_config.clone();
+        let mut provider_injection = None;
+        let mut provider_selection = (None, None);
+        if let Some((prev_cfg, Some(prev_pid))) =
+            ExecutionProcess::latest_executor_config_for_session(&self.db.pool, ctx.session.id)
+                .await?
+        {
+            let provider_id: Uuid = prev_pid
+                .parse()
+                .map_err(|e| anyhow!("bad provider id {prev_pid} on the last turn: {e}"))?;
+            let provider = Provider::find_by_id(&self.db.pool, provider_id)
+                .await
+                .map_err(|e| anyhow!("provider {provider_id} for the queued message: {e}"))?;
+            if !provider.enabled {
+                return Err(anyhow!("provider '{}' is disabled", provider.name).into());
+            }
+            executor_config.model_id = prev_cfg.model_id.clone();
+            let model_id = executor_config.model_id.clone().unwrap_or_default();
+            let injection = provider
+                .build_agent_injection(executor_config.executor, &model_id)
+                .map_err(|e| anyhow!("provider env for the queued message: {e}"))?;
+            provider_injection = Some(injection);
+            provider_selection = (Some(prev_pid), executor_config.model_id.clone());
+        }
+
         let action_type = if let Some(info) = latest_session_info {
             ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
                 prompt: queued_data.message.clone(),
                 session_id: info.session_id,
                 reset_to_message_id: None,
-                executor_config: queued_data.executor_config.clone(),
+                executor_config: executor_config.clone(),
                 working_dir: working_dir.clone(),
             })
         } else {
             ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
                 prompt: queued_data.message.clone(),
-                executor_config: queued_data.executor_config.clone(),
+                executor_config: executor_config.clone(),
                 working_dir,
             })
         };
 
-        let action = ExecutorAction::new(action_type, None);
+        let mut action = ExecutorAction::new(action_type, None);
+        if let Some(injection) = provider_injection {
+            if let Some(env) = injection.env {
+                action = action.with_provider_env(env);
+            }
+            if let Some(codex) = injection.codex {
+                action = action.with_provider_codex(codex);
+            }
+        }
+        let action = action.with_provider_selection(provider_selection.0, provider_selection.1);
 
         self.start_execution(
             &ctx.workspace,

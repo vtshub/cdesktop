@@ -506,9 +506,48 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     setPreferredEffort,
   } = useWorkspacePickerSelection(workspaceId);
 
+  // A chat stays on the provider it started with (the server enforces this
+  // too). Show that provider and model, not this browser's last pick: a
+  // browser that never opened this chat would otherwise show the fallback.
+  const sessionProvider = useMemo(() => {
+    for (let i = processes.length - 1; i >= 0; i--) {
+      const action = processes[i].executor_action as {
+        selected_provider_id?: string | null;
+        selected_model_id?: string | null;
+      };
+      if (action?.selected_provider_id) {
+        return {
+          providerId: action.selected_provider_id,
+          modelId: action.selected_model_id ?? null,
+        };
+      }
+    }
+    return null;
+  }, [processes]);
+  useEffect(() => {
+    if (!sessionProvider) return;
+    if (sessionProvider.providerId === selectedProviderId) return;
+    setSelection(sessionProvider.providerId, sessionProvider.modelId, null);
+  }, [sessionProvider, selectedProviderId, setSelection]);
+
+  const { data: providers = [] } = useProviders();
+
+  // A provider can state its real context window in CDT_CONTEXT_WINDOW. A
+  // local model routed as "<id>[1m]" makes Claude Code report 1M even though
+  // the server holds less, and an unknown id is reported as 200K.
+  const displayTokenUsageInfo = useMemo(() => {
+    if (!tokenUsageInfo) return tokenUsageInfo;
+    const provider = providers.find((p) => p.id === selectedProviderId);
+    const declared = Number.parseInt(
+      provider?.claude?.env?.CDT_CONTEXT_WINDOW ?? '',
+      10
+    );
+    if (!Number.isFinite(declared) || declared <= 0) return tokenUsageInfo;
+    return { ...tokenUsageInfo, model_context_window: declared };
+  }, [tokenUsageInfo, providers, selectedProviderId]);
+
   // Legacy / never-picked sessions: seed from last-used (or the active agent's
   // first canonical model) so the pill matches what will actually run on send.
-  const { data: providers = [] } = useProviders();
   const { config: agentModelConfig } =
     useModelSelectorConfig(effectiveExecutor);
   const agentDefaultModels = useMemo(
@@ -1119,7 +1158,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       getActiveTurnPatchKey={getActiveTurnPatchKey}
       renderEditor={renderEditor}
       repoIds={repoIds}
-      tokenUsageInfo={tokenUsageInfo}
+      tokenUsageInfo={displayTokenUsageInfo}
       supportsContextUsage={supportsContextUsage}
       formatExecutorLabel={toPrettyCase}
       formatSessionDate={(createdAt) =>

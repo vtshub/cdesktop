@@ -240,6 +240,29 @@ pub async fn follow_up(
             .and_then(|(_, pid)| pid.as_deref().and_then(|s| s.parse().ok()));
     }
 
+    // A chat stays on the provider it started with. Each provider can point
+    // the CLI at its own config dir and endpoint (e.g. a local model with
+    // CLAUDE_CONFIG_DIR), so resuming a session under another provider fails
+    // with "No conversation found" or sends the chat to the wrong account.
+    // A browser that never picked a model for this chat shows the fallback
+    // (Opus), so the picker alone cannot be trusted here.
+    if let Some((prev_cfg, Some(prev_pid))) =
+        ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?
+        && let Ok(prev_provider) = prev_pid.parse::<Uuid>()
+        && payload.selected_provider_id != Some(prev_provider)
+    {
+        tracing::warn!(
+            session_id = %session.id,
+            requested = ?payload.selected_provider_id,
+            kept = %prev_provider,
+            "follow-up asked for another provider; keeping the chat's provider"
+        );
+        payload.selected_provider_id = Some(prev_provider);
+        if let Some(cfg) = payload.executor_config.as_mut() {
+            cfg.model_id = prev_cfg.model_id.clone();
+        }
+    }
+
     let mut executor_config = payload.executor_config.ok_or_else(|| {
         ApiError::BadRequest(
             "executor_config required: session has no prior execution to inherit from".into(),
