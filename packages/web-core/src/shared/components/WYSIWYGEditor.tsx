@@ -61,11 +61,55 @@ import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
 import { CodeHighlightPlugin } from '@vibe/ui/components/CodeHighlightPlugin';
 import { CODE_HIGHLIGHT_CLASSES } from '@vibe/ui/lib/code-highlight-theme';
-import { LinkNode } from '@lexical/link';
+import {
+  AutoLinkNode,
+  LinkNode,
+  createLinkMatcherWithRegExp,
+  registerAutoLink,
+} from '@lexical/link';
 import { TableNode, TableRowNode, TableCellNode } from '@lexical/table';
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
-import { type EditorState, type LexicalEditor } from 'lexical';
+import {
+  $getRoot,
+  $isElementNode,
+  $isTextNode,
+  type EditorState,
+  type LexicalEditor,
+  type LexicalNode,
+} from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+
+// Bare http(s) URLs in chat messages become links (read-only view only).
+const URL_MATCHERS = [
+  createLinkMatcherWithRegExp(
+    /https?:\/\/[^\s<>"'`«»()\[\]]+[^\s<>"'`«»()\[\].,;:!?]/,
+    (text) => text
+  ),
+];
+
+/**
+ * Lexical's AutoLinkPlugin only links text changed after it registers, and the
+ * message text is already in place by then. So register, then touch every text
+ * node once so the autolink transform runs over the existing content.
+ */
+function ReadOnlyAutoLinkPlugin() {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    const unregister = registerAutoLink(editor, {
+      matchers: URL_MATCHERS,
+      changeHandlers: [],
+    });
+    editor.update(() => {
+      const walk = (node: LexicalNode) => {
+        if ($isTextNode(node)) node.markDirty();
+        else if ($isElementNode(node)) node.getChildren().forEach(walk);
+      };
+      walk($getRoot());
+    });
+    return unregister;
+  }, [editor]);
+  return null;
+}
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
@@ -440,6 +484,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
           CodeNode,
           CodeHighlightNode,
           LinkNode,
+          AutoLinkNode,
           ImageNode,
           AttachmentNode,
           PrCommentNode,
@@ -600,6 +645,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                   </>
                 )}
                 {/* Link sanitization for read-only mode */}
+                {disabled && <ReadOnlyAutoLinkPlugin />}
                 {disabled && <ReadOnlyLinkPlugin />}
                 {/* Clickable code for file paths in read-only mode */}
                 {disabled && findMatchingDiffPath && onCodeClick && (

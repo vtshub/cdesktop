@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { LinkNode } from '@lexical/link';
+import { AutoLinkNode, LinkNode } from '@lexical/link';
 
 /**
  * Sanitize href to block dangerous protocols.
@@ -19,8 +19,8 @@ function sanitizeHref(href?: string): string | undefined {
     trimmed.startsWith('/')
   )
     return trimmed;
-  // Allow only https
-  if (/^https:\/\//i.test(trimmed)) return trimmed;
+  // Allow http(s)
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
   // Block everything else by default
   return undefined;
 }
@@ -30,7 +30,7 @@ function sanitizeHref(href?: string): string | undefined {
  */
 function isExternalHref(href?: string): boolean {
   if (!href) return false;
-  return /^https:\/\//i.test(href);
+  return /^https?:\/\//i.test(href);
 }
 
 /**
@@ -44,9 +44,9 @@ export function ReadOnlyLinkPlugin() {
 
   useEffect(() => {
     // Register a mutation listener to modify link DOM elements
-    const unregister = editor.registerMutationListener(
-      LinkNode,
-      (mutations) => {
+    // (listeners are per class, so auto-detected URLs need their own)
+    const unregisters = [LinkNode, AutoLinkNode].map((klass) =>
+      editor.registerMutationListener(klass, (mutations) => {
         for (const [nodeKey, mutation] of mutations) {
           if (mutation === 'destroyed') continue;
 
@@ -81,7 +81,7 @@ export function ReadOnlyLinkPlugin() {
             dom.title = href ?? '';
           }
         }
-      }
+      })
     );
 
     // Also handle existing links on mount by triggering a read
@@ -118,7 +118,7 @@ export function ReadOnlyLinkPlugin() {
       });
     });
 
-    return unregister;
+    return () => unregisters.forEach((u) => u());
   }, [editor]);
 
   return null;
